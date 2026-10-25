@@ -1,0 +1,25 @@
+END-USER LICENSE AGREEMENT (EULA) FOR PDF PORTFOLIO MAKER
+
+IMPORTANT — READ CAREFULLY: This End-User License Agreement ("Agreement") is a legal contract between you (either an individual professional or a single legal entity, "Licensee") and the publisher of PDF Portfolio Maker ("Licensor") for the PDF Portfolio Maker desktop software application and associated documentation ("Software").
+
+By installing, copying, or otherwise using the Software, you agree to be bound by the terms of this Agreement.
+
+1. GRANT OF LICENSE
+   a) Evaluation / Demo Mode: Licensor grants you a non-exclusive, non-transferable, revocable license to install and run the Software in Evaluation Mode on Windows workstations you own or control. Portfolios exported in Evaluation Mode include an evaluation watermark on the cover sheet.
+   b) Solo Perpetual License ($49 One-Time): Upon purchasing a Solo License Key, Licensor grants you a perpetual, non-exclusive license to install and activate the Software on one (1) Windows workstation owned or controlled by you for commercial and professional document packaging without evaluation watermarks, including one (1) year of software updates from the date of issue.
+   c) Firm Perpetual License ($149 One-Time): Upon purchasing a Firm License Key, Licensor grants your organization a perpetual, non-exclusive license to install and activate the Software on up to five (5) Windows workstations owned or controlled by your organization, including one (1) year of software updates from the date of issue.
+
+2. 100% AIR-GAPPED OFFLINE OPERATION & PRIVACY
+   The Software operates 100% offline. License Keys (formatted as Ed25519 cryptographically signed PPM1 tokens) are verified locally against the public key embedded in the Software binary and stored in %LOCALAPPDATA%\PDFPortfolioMaker\license.lic. No client documents, filenames, metadata, or telemetry are ever transmitted over the internet.
+
+3. RESTRICTIONS
+   You may not:
+   a) Install or use a License Key on more workstations than permitted by your licensed seat count (1 seat for Solo, 5 seats for Firm);
+   b) Publicly post, redistribute, sublicense, rent, or lease your License Key;
+   c) Reverse engineer, decompile, disassemble, or modify the Software's cryptographic verification routines.
+
+4. DISCLAIMER OF WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+5. LIMITATION OF LIABILITY
+   IN NO EVENT SHALL LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE, EXCEEDING THE AMOUNT PAID BY YOU FOR THE SOFTWARE.

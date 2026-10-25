@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+dist-installer/
+*.spec.bak
+.pytest_cache/
+.secrets/
+*.lic
+.env
+.env.*
+!.env.example
