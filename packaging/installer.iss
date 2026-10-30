@@ -6,7 +6,7 @@
 #define MyAppName "PDF Portfolio Maker"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "PDF Portfolio Maker Team"
-#define MyAppURL "https://pdfportfoliomaker.com"
+#define MyAppURL "https://pictureperfect.click/pdf-portfolio-creator.html"
 #define MyAppExeName "PDFPortfolioMaker.exe"
 #define MyAppAssocName "PDF Portfolio Document"
 #define MyAppAssocExt ".pdfportfolio"

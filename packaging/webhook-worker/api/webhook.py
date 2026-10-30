@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import os
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
@@ -47,7 +48,15 @@ def create_signed_ppm1_token(
     max_version: int = 1,
     expires_at: Optional[str] = None,
 ) -> str:
-    priv = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(private_key_hex.strip()))
+    priv_key_str = (private_key_hex or "").strip()
+    if not priv_key_str or len(priv_key_str) != 64:
+        raise ValueError("Invalid ED25519_PRIVATE_KEY_HEX: expected 64-character hex string")
+    try:
+        priv_bytes = bytes.fromhex(priv_key_str)
+        priv = ed25519.Ed25519PrivateKey.from_private_bytes(priv_bytes)
+    except Exception as exc:
+        raise ValueError(f"Failed to load Ed25519 private key: {exc}")
+
     now = datetime.now(timezone.utc)
     updates_until = now.replace(year=now.year + (maintenance_months // 12))
 
@@ -87,7 +96,7 @@ def verify_signature(raw_body: bytes, signature_header: str) -> bool:
 
 def send_fulfillment_email(to_email: str, customer_name: str, token: str) -> bool:
     resend_api_key = os.environ.get("RESEND_API_KEY", "").strip()
-    sender = os.environ.get("SENDER_EMAIL", "PDF Portfolio Maker <licenses@pdfportfoliomaker.com>")
+    sender = os.environ.get("SENDER_EMAIL", "licenses@pictureperfect.click")
     license_block = format_email_block(token)
 
     email_body = f"""Hi {customer_name},
@@ -127,8 +136,11 @@ PDF Portfolio Maker Team
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return 200 <= resp.status < 300
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return 200 <= resp.status < 300
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        return False
 
 
 def process_webhook(headers: Dict[str, str], raw_body: bytes) -> Dict[str, Any]:
@@ -137,7 +149,11 @@ def process_webhook(headers: Dict[str, str], raw_body: bytes) -> Dict[str, Any]:
     if not verify_signature(raw_body, signature):
         return {"status": 401, "body": {"error": "Invalid X-Signature"}}
 
-    data = json.loads(raw_body.decode("utf-8"))
+    try:
+        data = json.loads(raw_body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {"status": 400, "body": {"error": "Invalid JSON body"}}
+
     event_name = data.get("meta", {}).get("event_name")
 
     if event_name == "order_created":
@@ -149,26 +165,49 @@ def process_webhook(headers: Dict[str, str], raw_body: bytes) -> Dict[str, Any]:
         customer_name = attributes.get("user_name") or "Valued Customer"
         first_item = attributes.get("first_order_item") or {}
         variant_name = str(first_item.get("variant_name", "solo")).lower()
+        custom_data = data.get("meta", {}).get("custom_data") or {}
+        custom_plan = str(custom_data.get("plan") or custom_data.get("tier") or "").lower()
+        custom_seats = custom_data.get("seats")
 
-        seats = 5 if ("firm" in variant_name or "team" in variant_name) else 1
-        plan = "firm" if seats > 1 else "solo"
+        is_firm = (
+            "firm" in variant_name
+            or "team" in variant_name
+            or "firm" in custom_plan
+            or "team" in custom_plan
+            or (isinstance(custom_seats, (int, str)) and str(custom_seats).isdigit() and int(custom_seats) > 1)
+        )
+        seats = int(custom_seats) if (isinstance(custom_seats, (int, str)) and str(custom_seats).isdigit() and int(custom_seats) > 1) else (5 if is_firm else 1)
+        plan = "firm" if is_firm else "solo"
 
         private_key_hex = os.environ.get("ED25519_PRIVATE_KEY_HEX", "")
-        token = create_signed_ppm1_token(
-            private_key_hex=private_key_hex,
-            customer_name=customer_name,
-            customer_email=customer_email,
-            order_id=f"ls_{order_id}",
-            plan=plan,
-            seats=seats,
-            maintenance_months=12,
-            max_version=1,
-        )
+        try:
+            token = create_signed_ppm1_token(
+                private_key_hex=private_key_hex,
+                customer_name=customer_name,
+                customer_email=customer_email,
+                order_id=f"ls_{order_id}",
+                plan=plan,
+                seats=seats,
+                maintenance_months=12,
+                max_version=1,
+            )
+        except ValueError as err:
+            return {"status": 500, "body": {"error": f"Key configuration error: {err}"}}
 
         email_sent = send_fulfillment_email(customer_email, customer_name, token)
+        if not email_sent:
+            return {
+                "status": 502,
+                "body": {
+                    "error": "Failed to send fulfillment email via Resend",
+                    "order_id": f"ls_{order_id}",
+                    "email_sent": False,
+                },
+            }
+
         return {
             "status": 200,
-            "body": {"received": True, "order_id": f"ls_{order_id}", "plan": plan, "seats": seats, "email_sent": email_sent},
+            "body": {"received": True, "order_id": f"ls_{order_id}", "plan": plan, "seats": seats, "email_sent": True},
         }
 
     return {"status": 200, "body": {"received": True, "ignored_event": event_name}}
@@ -176,6 +215,14 @@ def process_webhook(headers: Dict[str, str], raw_body: bytes) -> Dict[str, Any]:
 
 class handler(BaseHTTPRequestHandler):
     """Vercel Python Serverless Function entrypoint."""
+
+    def do_GET(self):
+        body_bytes = json.dumps({"status": "active", "service": "PDF Portfolio Maker Webhook"}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body_bytes)))
+        self.end_headers()
+        self.wfile.write(body_bytes)
 
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))

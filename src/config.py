@@ -13,4 +13,5 @@ APP_BUILD_DATE = "2026-11-01T00:00:00Z"
 EMBEDDED_PUBLIC_KEY_HEX = "209850db3e18e6840d4a357cc82562ff0e7f05645d6c7020becd237cf6b6972b"
 
 SUPPORT_EMAIL = "support@pdfportfoliomaker.com"
-PURCHASE_URL = "https://pdfportfoliomaker.lemonsqueezy.com/buy"
+PURCHASE_URL = "https://pictureperfect.lemonsqueezy.com/checkout"
+

@@ -1,0 +1,10 @@
+[project]
+name = "pdf-portfolio-webhook"
+version = "1.0.0"
+description = "Lemon Squeezy order fulfillment webhook for PDF Portfolio Maker"
+dependencies = [
+    "cryptography>=42.0.0"
+]
+
+[tool.vercel]
+entrypoint = "api.webhook:handler"
