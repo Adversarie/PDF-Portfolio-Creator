@@ -58,12 +58,13 @@ class OfflineLicenseVerifier:
 
     def __init__(
         self,
-        public_key_hex: str = EMBEDDED_PUBLIC_KEY_HEX,
+        public_key_hex: Optional[str] = None,
         app_version: str = APP_VERSION,
         build_date_iso: str = APP_BUILD_DATE,
     ):
+        pub_hex = public_key_hex if public_key_hex is not None else EMBEDDED_PUBLIC_KEY_HEX
         self._public_key = ed25519.Ed25519PublicKey.from_public_bytes(
-            bytes.fromhex(public_key_hex)
+            bytes.fromhex(pub_hex)
         )
         self._app_version = app_version
         self._app_major = int(app_version.split(".")[0])
@@ -191,19 +192,64 @@ def get_license_file_path() -> Path:
 
 
 def load_installed_license() -> Optional[str]:
-    """Reads the stored license key string from disk if present."""
-    path = get_license_file_path()
-    if path.is_file():
+    """
+    Reads the stored license key string from disk if present.
+    Supports zero-touch custom workflow & air-gapped provisioning:
+    1. Checks environment variable PDF_PORTFOLIO_LICENSE_KEY.
+    2. Checks standard user AppData / application support path.
+    3. Checks portable license.lic in sys.executable directory or current working directory.
+       If a valid portable license.lic is found and %APPDATA% does not have one,
+       it is auto-persisted to %APPDATA% for seamless subsequent launches.
+    """
+    # 1. Environment variable override (zero-touch automated workflows / CI / containers)
+    env_token = os.environ.get("PDF_PORTFOLIO_LICENSE_KEY", "").strip()
+    if env_token:
+        return env_token
+
+    # 2. Standard AppData license file
+    appdata_path = get_license_file_path()
+    if appdata_path.is_file():
         try:
-            return path.read_text(encoding="utf-8").strip()
+            content = appdata_path.read_text(encoding="utf-8").strip()
+            if content:
+                return content
         except Exception:
-            return None
+            pass
+
+    # 3. Portable license.lic in executable directory or current working directory
+    candidates = []
+    try:
+        candidates.append(Path(sys.executable).parent / "license.lic")
+    except Exception:
+        pass
+    try:
+        candidates.append(Path.cwd() / "license.lic")
+    except Exception:
+        pass
+
+    for cand in candidates:
+        if cand.is_file():
+            try:
+                candidate_text = cand.read_text(encoding="utf-8").strip()
+                if candidate_text:
+                    # Validate candidate before auto-persisting
+                    verifier = OfflineLicenseVerifier()
+                    status = verifier.verify(candidate_text)
+                    if status.is_valid:
+                        if not appdata_path.is_file():
+                            save_installed_license(candidate_text)
+                        return candidate_text
+                    return candidate_text
+            except Exception:
+                pass
+
     return None
 
 
 def save_installed_license(token: str) -> None:
     """Persists a license key string to local disk."""
     path = get_license_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(token.strip(), encoding="utf-8")
 
 

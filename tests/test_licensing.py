@@ -5,6 +5,7 @@ Unit tests for Ed25519 offline license verification and storage.
 """
 
 import os
+import sys
 from pathlib import Path
 import pytest
 
@@ -205,4 +206,108 @@ def test_embedded_production_public_key_and_webhook_worker(monkeypatch):
     assert verified.is_valid is True
     assert verified.plan == "firm"
     assert verified.seats == 5
+
+
+def test_cli_mint_key_ppm1_and_pp1(test_keypair, monkeypatch, capsys):
+    from src.licensing.issuer import main as issuer_main
+
+    priv_hex, pub_hex = test_keypair
+
+    # 1. Mint PPM1 token via CLI
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "issuer.py",
+            "mint-key",
+            "--product",
+            "pdf-portfolio-maker",
+            "--name",
+            "Alice Partner",
+            "--email",
+            "alice@law.example",
+            "--plan",
+            "firm",
+            "--seats",
+            "10",
+            "--private-key-hex",
+            priv_hex,
+            "--raw",
+        ],
+    )
+    issuer_main()
+    out_ppm1, _ = capsys.readouterr()
+    token_ppm1 = out_ppm1.strip()
+    assert token_ppm1.startswith("PPM1.")
+
+    verifier_ppm1 = OfflineLicenseVerifier(pub_hex)
+    status_ppm1 = verifier_ppm1.verify(token_ppm1)
+    assert status_ppm1.is_valid is True
+    assert status_ppm1.customer_name == "Alice Partner"
+    assert status_ppm1.plan == "firm"
+    assert status_ppm1.seats == 10
+
+    # 2. Mint PP1 token via CLI
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "issuer.py",
+            "mint-key",
+            "--product",
+            "picture-perfect",
+            "--name",
+            "Bob Studio",
+            "--email",
+            "bob@photo.example",
+            "--plan",
+            "pro",
+            "--seats",
+            "2",
+            "--private-key-hex",
+            priv_hex,
+            "--raw",
+        ],
+    )
+    issuer_main()
+    out_pp1, _ = capsys.readouterr()
+    token_pp1 = out_pp1.strip()
+    assert token_pp1.startswith("PP1.")
+
+
+def test_auto_provisioning_env_var(monkeypatch, tmp_path):
+    monkeypatch.setattr("src.licensing.verifier.get_license_file_path", lambda: tmp_path / "nonexistent.lic")
+    monkeypatch.setenv("PDF_PORTFOLIO_LICENSE_KEY", "PPM1.test_env_token.test_sig")
+
+    loaded = load_installed_license()
+    assert loaded == "PPM1.test_env_token.test_sig"
+
+
+def test_auto_provisioning_portable_file(test_keypair, monkeypatch, tmp_path):
+    priv_hex, pub_hex = test_keypair
+    issuer = LicenseIssuer(priv_hex)
+    valid_token = issuer.create_license_token(
+        customer_name="Dr. Portable",
+        customer_email="portable@airgap.example",
+        order_id="airgap_001",
+        plan="solo",
+    )
+
+    fake_appdata = tmp_path / "appdata" / "license.lic"
+    monkeypatch.setattr("src.licensing.verifier.get_license_file_path", lambda: fake_appdata)
+    monkeypatch.delenv("PDF_PORTFOLIO_LICENSE_KEY", raising=False)
+
+    # In a temp cwd, write portable license.lic
+    portable_lic = tmp_path / "license.lic"
+    portable_lic.write_text(valid_token, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("src.licensing.verifier.EMBEDDED_PUBLIC_KEY_HEX", pub_hex)
+
+    assert not fake_appdata.exists()
+    loaded = load_installed_license()
+    assert loaded == valid_token
+    # Check that it auto-persisted to fake_appdata
+    assert fake_appdata.is_file()
+    assert fake_appdata.read_text(encoding="utf-8").strip() == valid_token
+
 
