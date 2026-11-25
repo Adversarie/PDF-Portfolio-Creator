@@ -82,3 +82,35 @@ Root: HKA; Subkey: "Software\Classes\{#MyAppAssocKey}\shell\open\command"; Value
 [Run]
 ; Launch application option upon installation completion
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  LicenseKeyParam: String;
+  LicenseFileParam: String;
+  LocalStageDir: String;
+  RoamingStageDir: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    LicenseKeyParam := ExpandConstant('{param:LICENSEKEY|}');
+    LicenseFileParam := ExpandConstant('{param:LICENSEFILE|}');
+    LocalStageDir := ExpandConstant('{localappdata}\PDFPortfolioMaker');
+    RoamingStageDir := ExpandConstant('{userappdata}\{#MyAppName}');
+
+    if LicenseKeyParam <> '' then
+    begin
+      ForceDirectories(LocalStageDir);
+      SaveStringToFile(LocalStageDir + '\license.lic', LicenseKeyParam, False);
+      ForceDirectories(RoamingStageDir);
+      SaveStringToFile(RoamingStageDir + '\license.lic', LicenseKeyParam, False);
+    end
+    else if (LicenseFileParam <> '') and FileExists(LicenseFileParam) then
+    begin
+      ForceDirectories(LocalStageDir);
+      FileCopy(LicenseFileParam, LocalStageDir + '\license.lic', False);
+      ForceDirectories(RoamingStageDir);
+      FileCopy(LicenseFileParam, RoamingStageDir + '\license.lic', False);
+    end;
+  end;
+end;

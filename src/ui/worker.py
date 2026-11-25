@@ -25,6 +25,10 @@ class PortfolioBuilderWorker(QThread):
         subtitle: str,
         organization: str,
         is_evaluation: bool = True,
+        bates_prefix: str = "",
+        bates_start: int = 1,
+        bates_digits: int = 6,
+        include_sha256_manifest: bool = True,
     ):
         super().__init__()
         self.output_path = output_path
@@ -33,6 +37,10 @@ class PortfolioBuilderWorker(QThread):
         self.subtitle = subtitle
         self.organization = organization
         self.is_evaluation = is_evaluation
+        self.bates_prefix = bates_prefix
+        self.bates_start = bates_start
+        self.bates_digits = bates_digits
+        self.include_sha256_manifest = include_sha256_manifest
 
     def run(self):
         try:
@@ -44,6 +52,10 @@ class PortfolioBuilderWorker(QThread):
                 organization=self.organization,
                 is_evaluation=self.is_evaluation,
                 progress_callback=lambda pct, msg: self.progress.emit(pct, msg),
+                bates_prefix=self.bates_prefix,
+                bates_start=self.bates_start,
+                bates_digits=self.bates_digits,
+                include_sha256_manifest=self.include_sha256_manifest,
             )
             self.finished.emit(True, f"PDF Portfolio successfully created at:\n{self.output_path}")
         except Exception as e:

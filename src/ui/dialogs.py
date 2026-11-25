@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QMessageBox,
     QGroupBox,
+    QApplication,
 )
 from PySide6.QtGui import QFont, QDesktopServices
 from PySide6.QtCore import QUrl
@@ -26,6 +27,7 @@ from src.licensing.verifier import (
     save_installed_license,
     remove_installed_license,
     load_installed_license,
+    get_machine_fingerprint,
     LicenseStatus,
 )
 
@@ -38,7 +40,7 @@ class LicenseDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("License Activation - PDF Portfolio Maker")
-        self.resize(560, 420)
+        self.resize(580, 470)
         self.verifier = OfflineLicenseVerifier()
 
         self.init_ui()
@@ -50,18 +52,34 @@ class LicenseDialog(QDialog):
         layout.setSpacing(14)
 
         # Status Banner
-        self.status_group = QGroupBox("Current License Status")
+        self.status_group = QGroupBox("Current License Status & Workstation Binding")
         status_layout = QVBoxLayout(self.status_group)
         self.lbl_status = QLabel()
         self.lbl_status.setWordWrap(True)
         self.lbl_status.setTextFormat(Qt.TextFormat.RichText)
         status_layout.addWidget(self.lbl_status)
+
+        machine_row = QHBoxLayout()
+        self.machine_id_str = get_machine_fingerprint()
+        self.lbl_machine = QLabel(f"<b>Workstation Machine ID:</b> <code>{self.machine_id_str}</code>")
+        self.lbl_machine.setTextFormat(Qt.TextFormat.RichText)
+        machine_row.addWidget(self.lbl_machine)
+        machine_row.addStretch()
+        self.btn_copy_machine = QPushButton("Copy Machine ID")
+        self.btn_copy_machine.clicked.connect(self.action_copy_machine_id)
+        machine_row.addWidget(self.btn_copy_machine)
+        status_layout.addLayout(machine_row)
+
         layout.addWidget(self.status_group)
 
         # Key Input Section
         self.input_group = QGroupBox("Enter License Key")
         input_layout = QVBoxLayout(self.input_group)
-        lbl_hint = QLabel("Paste your license key or confirmation email block below:")
+        lbl_hint = QLabel(
+            "Paste your offline PPM1 License Key block below. "
+            "One-time perpetual licensing ($49 Solo / $149 Firm 5-Seat — replaces $240/yr Acrobat Pro subscriptions):"
+        )
+        lbl_hint.setWordWrap(True)
         lbl_hint.setStyleSheet("color: #64748B;")
         input_layout.addWidget(lbl_hint)
 
@@ -74,7 +92,7 @@ class LicenseDialog(QDialog):
         # Buttons
         btn_layout = QHBoxLayout()
 
-        self.btn_buy = QPushButton("Buy License ($49)")
+        self.btn_buy = QPushButton("Buy Perpetual License ($49 Solo / $149 Firm)")
         self.btn_buy.clicked.connect(self.action_buy)
         btn_layout.addWidget(self.btn_buy)
 
@@ -96,23 +114,34 @@ class LicenseDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
+    def action_copy_machine_id(self):
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(self.machine_id_str)
+            self.btn_copy_machine.setText("Copied!")
+
     def refresh_display(self):
         status = get_active_license_status()
         if status.is_valid:
             plan_title = status.plan.capitalize() if status.plan else "Pro"
+            binding_info = (
+                f"Hardware-bound ({len(status.bound_machines)} machine(s))"
+                if status.bound_machines
+                else f"Active on workstation {self.machine_id_str}"
+            )
             self.lbl_status.setText(
                 f"<b>Status:</b> <span style='color: #16A34A;'>Licensed ({plan_title} Edition)</span><br>"
                 f"<b>Licensed to:</b> {status.customer_name} &lt;{status.customer_email}&gt;<br>"
-                f"<b>Seats:</b> {status.seats} computer(s)<br>"
-                f"<i>All export watermarks are removed. Operating 100% offline.</i>"
+                f"<b>Seats:</b> {status.seats} workstation(s) · {binding_info}<br>"
+                f"<i>All Cover Sheet watermarks removed. Operating 100% air-gapped &amp; offline.</i>"
             )
             self.btn_deactivate.setVisible(True)
             self.txt_key.clear()
         else:
             self.lbl_status.setText(
                 "<b>Status:</b> <span style='color: #EA580C;'>Evaluation Mode (Unregistered)</span><br>"
-                "PDF Portfolios created in evaluation mode include a notice banner on Page 1.<br>"
-                "Enter a valid license key below to unlock clean, unwatermarked exports."
+                "PDF Portfolios created in evaluation mode include a notice banner on the Cover Sheet.<br>"
+                "Enter a valid License Key below to unlock unwatermarked court &amp; compliance exports."
             )
             self.btn_deactivate.setVisible(False)
 
@@ -122,15 +151,16 @@ class LicenseDialog(QDialog):
             QMessageBox.warning(self, "Empty Key", "Please paste your license key into the text box.")
             return
 
-        status = self.verifier.verify(raw_input)
+        status = self.verifier.activate_on_machine(raw_input)
         if status.is_valid:
             save_installed_license(raw_input)
             QMessageBox.information(
                 self,
                 "License Activated",
                 f"Thank you, {status.customer_name}!\n\n"
-                f"Your {status.plan.capitalize() if status.plan else 'Pro'} license has been successfully activated.\n"
-                "All export watermarks have been removed."
+                f"Your {status.plan.capitalize() if status.plan else 'Pro'} license has been successfully activated "
+                f"on workstation {self.machine_id_str}.\n"
+                "All Cover Sheet evaluation banners have been removed."
             )
             self.refresh_display()
             self.license_updated.emit()

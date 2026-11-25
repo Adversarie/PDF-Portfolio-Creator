@@ -28,7 +28,8 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
-    window = MainWindow()
+    initial_path = sys.argv[1] if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]) else None
+    window = MainWindow(initial_portfolio_path=initial_path)
     window.show()
 
     sys.exit(app.exec())

@@ -130,3 +130,46 @@ def test_worker_execution(qapp, tmp_path):
     assert out_pdf.stat().st_size > 500
     assert len(progress_events) >= 5
     assert progress_events[-1][0] == 100
+
+
+def test_main_window_round_trip_import_and_extract(qapp, tmp_path):
+    from src.engine.portfolio_builder import build_portfolio
+
+    portfolio_file = tmp_path / "Existing_Court_Packet.pdf"
+    initial_sources = [
+        SourceFile(
+            filepath="ex1.txt",
+            filename="Affidavit.txt",
+            size=19,
+            file_type="Plain Text Document",
+            modified_date=datetime.datetime(2026, 6, 1, 12, 0, tzinfo=datetime.timezone.utc),
+            description="Sworn affidavit",
+            data=b"Sworn testimony 123",
+            folder="Exhibits/Declarations",
+        )
+    ]
+    build_portfolio(
+        output_target=portfolio_file,
+        files=initial_sources,
+        title="Imported Case Portfolio",
+        subtitle="Docket 44-B",
+        organization="Trial Group",
+        is_evaluation=False,
+        bates_prefix="EXH-",
+        bates_start=10,
+    )
+
+    window = MainWindow(initial_portfolio_path=str(portfolio_file))
+    assert len(window.source_files) == 1
+    assert window.input_title.text() == "Imported Case Portfolio"
+    assert window.input_subtitle.text() == "Docket 44-B"
+    assert window.input_org.text() == "Trial Group"
+    assert window.source_files[0].filename == "Affidavit.txt"
+    assert window.source_files[0].folder == "Exhibits/Declarations"
+    assert window.source_files[0].bates_number == "EXH-000010"
+
+    # Extract loaded Source Files to a target folder
+    out_dir = tmp_path / "extracted_ui"
+    extracted_count = window.extract_current_files_to_directory(str(out_dir))
+    assert extracted_count == 1
+    assert (out_dir / "Exhibits" / "Declarations" / "Affidavit.txt").read_bytes() == b"Sworn testimony 123"

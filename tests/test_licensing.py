@@ -311,3 +311,120 @@ def test_auto_provisioning_portable_file(test_keypair, monkeypatch, tmp_path):
     assert fake_appdata.read_text(encoding="utf-8").strip() == valid_token
 
 
+def test_hardware_machine_binding_enforcement(test_keypair):
+    from src.licensing.verifier import get_machine_fingerprint, normalize_machine_id
+
+    priv_hex, pub_hex = test_keypair
+    issuer = LicenseIssuer(priv_hex)
+
+    fp = get_machine_fingerprint()
+    assert len(normalize_machine_id(fp)) == 16
+
+    # Mint a 1-seat Solo license bound specifically to workstation A1B2-C3D4-E5F6-0123
+    bound_token = issuer.create_license_token(
+        customer_name="Bound Solo User",
+        customer_email="solo@bound.example",
+        order_id="ls_bound_01",
+        plan="solo",
+        seats=1,
+        allowed_machines=["A1B2-C3D4-E5F6-0123"],
+    )
+
+    # 1. Authorized workstation succeeds
+    authorized_verifier = OfflineLicenseVerifier(pub_hex, machine_id="a1b2-c3d4-e5f6-0123")
+    ok_status = authorized_verifier.verify(bound_token)
+    assert ok_status.is_valid is True
+    assert ok_status.bound_machines == ["A1B2-C3D4-E5F6-0123"]
+
+    # 2. Unauthorized workstation is rejected
+    unauthorized_verifier = OfflineLicenseVerifier(pub_hex, machine_id="9999-8888-7777-6666")
+    bad_status = unauthorized_verifier.verify(bound_token)
+    assert bad_status.is_valid is False
+    assert "hardware seat lock mismatch" in bad_status.message.lower()
+
+    # 3. Token binding more machines than licensed seats is rejected
+    overbound_token = issuer.create_license_token(
+        customer_name="Overbound User",
+        customer_email="over@bound.example",
+        order_id="ls_bound_02",
+        plan="solo",
+        seats=1,
+        allowed_machines=["A1B2-C3D4-E5F6-0123", "1111-2222-3333-4444"],
+    )
+    over_status = authorized_verifier.verify(overbound_token)
+    assert over_status.is_valid is False
+    assert "seat cap exceeded" in over_status.message.lower()
+
+
+def test_offline_seat_ledger_cap_and_release(test_keypair, tmp_path):
+    from src.licensing.verifier import release_seat_in_ledger
+
+    priv_hex, pub_hex = test_keypair
+    issuer = LicenseIssuer(priv_hex)
+    ledger_file = tmp_path / "license_seats.json"
+
+    # 2-seat license
+    token = issuer.create_license_token(
+        customer_name="Small Firm",
+        customer_email="firm@example.com",
+        order_id="ls_ledger_2seat",
+        plan="firm",
+        seats=2,
+    )
+
+    v_mach1 = OfflineLicenseVerifier(pub_hex, machine_id="1111-1111-1111-1111")
+    v_mach2 = OfflineLicenseVerifier(pub_hex, machine_id="2222-2222-2222-2222")
+    v_mach3 = OfflineLicenseVerifier(pub_hex, machine_id="3333-3333-3333-3333")
+
+    # Seat 1 claims successfully
+    s1 = v_mach1.activate_on_machine(token, seat_ledger_path=ledger_file)
+    assert s1.is_valid is True
+    assert s1.claimed_seats == 1
+
+    # Seat 2 claims successfully
+    s2 = v_mach2.activate_on_machine(token, seat_ledger_path=ledger_file)
+    assert s2.is_valid is True
+    assert s2.claimed_seats == 2
+
+    # Seat 3 is blocked by 2-seat cap
+    s3 = v_mach3.activate_on_machine(token, seat_ledger_path=ledger_file)
+    assert s3.is_valid is False
+    assert "offline seat cap reached" in s3.message.lower()
+
+    # Releasing Seat 1 allows Seat 3 to claim
+    release_seat_in_ledger(machine_id="1111-1111-1111-1111", ledger_path=ledger_file)
+    s3_retry = v_mach3.activate_on_machine(token, seat_ledger_path=ledger_file)
+    assert s3_retry.is_valid is True
+    assert s3_retry.claimed_seats == 2
+
+
+def test_prestaged_localappdata_enterprise_license(test_keypair, monkeypatch, tmp_path):
+    priv_hex, pub_hex = test_keypair
+    issuer = LicenseIssuer(priv_hex)
+    enterprise_token = issuer.create_license_token(
+        customer_name="Defense Agency",
+        customer_email="it@agency.gov",
+        order_id="gov_msi_001",
+        plan="firm",
+        seats=5,
+    )
+
+    fake_roaming = tmp_path / "roaming" / "PDF Portfolio Maker" / "license.lic"
+    fake_localappdata = tmp_path / "localappdata"
+    prestaged_lic = fake_localappdata / "PDFPortfolioMaker" / "license.lic"
+    prestaged_lic.parent.mkdir(parents=True, exist_ok=True)
+    prestaged_lic.write_text(enterprise_token, encoding="utf-8")
+
+    monkeypatch.setattr("src.licensing.verifier.get_license_file_path", lambda: fake_roaming)
+    monkeypatch.setattr("src.licensing.verifier.read_gpo_registry_license", lambda: None)
+    monkeypatch.setattr("src.licensing.verifier.EMBEDDED_PUBLIC_KEY_HEX", pub_hex)
+    monkeypatch.delenv("PDF_PORTFOLIO_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(fake_localappdata))
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "empty_programdata"))
+    monkeypatch.chdir(tmp_path)
+
+    loaded = load_installed_license()
+    assert loaded == enterprise_token
+    assert fake_roaming.is_file()
+
+

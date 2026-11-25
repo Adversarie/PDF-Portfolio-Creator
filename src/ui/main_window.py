@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLabel,
     QLineEdit,
+    QSpinBox,
+    QCheckBox,
     QGroupBox,
     QProgressBar,
     QFileDialog,
@@ -35,6 +37,10 @@ from src.config import APP_NAME, APP_VERSION
 from src.engine.portfolio_builder import (
     SourceFile,
     create_source_file_from_path,
+    create_source_files_from_directory,
+    extract_email_archive,
+    inspect_portfolio,
+    normalize_folder_path,
 )
 from src.licensing.verifier import get_active_license_status, LicenseStatus
 from src.ui.dialogs import LicenseDialog, AboutDialog
@@ -53,10 +59,10 @@ def format_size(bytes_count: int) -> str:
 class MainWindow(QMainWindow):
     """Primary application window."""
 
-    def __init__(self):
+    def __init__(self, initial_portfolio_path: Optional[str] = None):
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(1000, 700)
+        self.resize(1040, 740)
         self.setAcceptDrops(True)
 
         self.source_files: List[SourceFile] = []
@@ -68,13 +74,20 @@ class MainWindow(QMainWindow):
         self.init_shortcuts()
         self.refresh_license_status()
 
+        if initial_portfolio_path and os.path.isfile(initial_portfolio_path):
+            self.import_portfolio_path(initial_portfolio_path)
+
     def init_menus(self):
         menubar = self.menuBar()
 
         # File Menu
         file_menu = menubar.addMenu("&File")
-        file_menu.addAction("&Add Files...", self.action_add_files, QKeySequence.StandardKey.Open)
-        file_menu.addAction("&Create Portfolio...", self.action_export, QKeySequence.StandardKey.Save)
+        file_menu.addAction("&Add Source Files...", self.action_add_files, QKeySequence.StandardKey.Open)
+        file_menu.addAction("Add &Folder Hierarchy...", self.action_add_folder, QKeySequence("Ctrl+Shift+O"))
+        file_menu.addAction("&Open / Import Existing Portfolio (.pdf)...", self.action_open_portfolio, QKeySequence("Ctrl+I"))
+        file_menu.addAction("&Extract All Source Files...", self.action_extract_all, QKeySequence("Ctrl+E"))
+        file_menu.addSeparator()
+        file_menu.addAction("&Create PDF Portfolio...", self.action_export, QKeySequence.StandardKey.Save)
         file_menu.addSeparator()
         file_menu.addAction("Clear &All", self.action_clear_all)
         file_menu.addSeparator()
@@ -125,10 +138,25 @@ class MainWindow(QMainWindow):
         btn_layout = QHBoxLayout()
         self.btn_add = QPushButton("+ Add Files...")
         self.btn_add.setStyleSheet(
-            "background-color: #2563EB; color: white; font-weight: bold; padding: 7px 16px; border-radius: 4px;"
+            "background-color: #2563EB; color: white; font-weight: bold; padding: 7px 14px; border-radius: 4px;"
         )
         self.btn_add.clicked.connect(self.action_add_files)
         btn_layout.addWidget(self.btn_add)
+
+        self.btn_add_folder = QPushButton("+ Add Folder...")
+        self.btn_add_folder.setToolTip("Add an entire directory preserving nested /Collection subfolders")
+        self.btn_add_folder.clicked.connect(self.action_add_folder)
+        btn_layout.addWidget(self.btn_add_folder)
+
+        self.btn_open_portfolio = QPushButton("Open Portfolio (.pdf)...")
+        self.btn_open_portfolio.setToolTip("Open an existing ISO 32000-1 PDF Portfolio to unpack, reorder, or append Source Files")
+        self.btn_open_portfolio.clicked.connect(self.action_open_portfolio)
+        btn_layout.addWidget(self.btn_open_portfolio)
+
+        self.btn_extract_all = QPushButton("Extract All...")
+        self.btn_extract_all.setToolTip("Unpack all Source Files to a local folder preserving folder structure and timestamps")
+        self.btn_extract_all.clicked.connect(self.action_extract_all)
+        btn_layout.addWidget(self.btn_extract_all)
 
         self.btn_remove = QPushButton("Remove Selected (Del)")
         self.btn_remove.clicked.connect(self.action_remove_selected)
@@ -169,8 +197,8 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(table_container)
 
-        # Bottom Container: Cover Sheet Configuration
-        cover_group = QGroupBox("Cover Sheet Configuration (Displayed in non-portfolio PDF readers)")
+        # Bottom Container: Cover Sheet & Legal E-Discovery Configuration
+        cover_group = QGroupBox("Cover Sheet & Legal E-Discovery Configuration")
         cover_layout = QVBoxLayout(cover_group)
 
         row1 = QHBoxLayout()
@@ -189,6 +217,25 @@ class MainWindow(QMainWindow):
         row2.addWidget(self.input_subtitle)
         cover_layout.addLayout(row2)
 
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Bates Prefix:"))
+        self.input_bates_prefix = QLineEdit("")
+        self.input_bates_prefix.setPlaceholderText("Optional (e.g. EXH-)")
+        self.input_bates_prefix.setFixedWidth(150)
+        row3.addWidget(self.input_bates_prefix)
+
+        row3.addWidget(QLabel("Start #:"))
+        self.spin_bates_start = QSpinBox()
+        self.spin_bates_start.setRange(1, 999999)
+        self.spin_bates_start.setValue(1)
+        row3.addWidget(self.spin_bates_start)
+
+        self.chk_sha256_manifest = QCheckBox("Include SHA-256 Chain-of-Custody Exhibit Manifest on Cover Sheet")
+        self.chk_sha256_manifest.setChecked(True)
+        row3.addWidget(self.chk_sha256_manifest)
+        row3.addStretch()
+        cover_layout.addLayout(row3)
+
         splitter.addWidget(cover_group)
         main_layout.addWidget(splitter, stretch=1)
 
@@ -198,7 +245,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.progress_bar)
 
         footer_layout = QHBoxLayout()
-        self.lbl_status = QLabel("Drag & drop files from Windows Explorer or click '+ Add Files...'")
+        self.lbl_status = QLabel("Drag & drop files/folders from Windows Explorer or click '+ Add Files...'")
         self.lbl_status.setStyleSheet("color: #64748B;")
         footer_layout.addWidget(self.lbl_status)
 
@@ -228,23 +275,48 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event: QDropEvent):
         urls = event.mimeData().urls()
-        filepaths = [u.toLocalFile() for u in urls if os.path.isfile(u.toLocalFile())]
+        filepaths = []
+        dirpaths = []
+        for u in urls:
+            local = u.toLocalFile()
+            if os.path.isdir(local):
+                dirpaths.append(local)
+            elif os.path.isfile(local):
+                filepaths.append(local)
+
         if filepaths:
             self.add_file_paths(filepaths)
+        for d in dirpaths:
+            self.add_directory_path(d)
 
     # -----------------------------------------------------------------------
-    # Table & File Management
+    # Table, Directory, Archive & Round-Trip Portfolio Management
     # -----------------------------------------------------------------------
 
     def action_add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "Select Source Files for PDF Portfolio",
+            "Select Source Files or Email Archives for PDF Portfolio",
             "",
-            "All Supported Documents (*.pdf *.docx *.xlsx *.msg *.eml *.png *.jpg *.txt *.zip);;All Files (*.*)"
+            "All Supported Documents (*.pdf *.docx *.xlsx *.msg *.eml *.pst *.mbox *.png *.jpg *.txt *.zip);;All Files (*.*)"
         )
         if files:
             self.add_file_paths(files)
+
+    def action_add_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder Hierarchy to Add to /Collection")
+        if folder:
+            self.add_directory_path(folder)
+
+    def add_directory_path(self, dir_path: str):
+        try:
+            nested_items = create_source_files_from_directory(dir_path)
+            for item in nested_items:
+                if not any(str(existing.filepath) == str(item.filepath) for existing in self.source_files):
+                    self.source_files.append(item)
+            self.refresh_table()
+        except Exception as e:
+            QMessageBox.warning(self, "Error Scanning Folder", f"Could not scan directory {dir_path}:\n{e}")
 
     def add_file_paths(self, paths: List[str]):
         for p in paths:
@@ -252,12 +324,92 @@ class MainWindow(QMainWindow):
             if any(str(item.filepath) == str(path_obj) for item in self.source_files):
                 continue
             try:
-                source = create_source_file_from_path(path_obj)
-                self.source_files.append(source)
+                if path_obj.suffix.lower() in (".pst", ".mbox"):
+                    extracted = extract_email_archive(path_obj)
+                    self.source_files.extend(extracted)
+                else:
+                    source = create_source_file_from_path(path_obj)
+                    self.source_files.append(source)
             except Exception as e:
                 QMessageBox.warning(self, "Error Reading File", f"Could not read {path_obj.name}:\n{e}")
 
         self.refresh_table()
+
+    def action_open_portfolio(self):
+        portfolio_file, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Existing PDF Portfolio (.pdf)",
+            "",
+            "PDF Portfolios (*.pdf *.pdfportfolio);;All Files (*.*)"
+        )
+        if portfolio_file:
+            self.import_portfolio_path(portfolio_file)
+
+    def import_portfolio_path(self, portfolio_path: str) -> int:
+        """
+        Loads an existing ISO 32000-1 PDF Portfolio into the workspace for
+        inspection, reordering, metadata editing, extraction, or appending.
+        Returns the number of Source Files imported.
+        """
+        try:
+            manifest = inspect_portfolio(portfolio_path)
+            if manifest.title:
+                self.input_title.setText(manifest.title)
+            if manifest.subtitle:
+                self.input_subtitle.setText(manifest.subtitle)
+            if manifest.organization:
+                self.input_org.setText(manifest.organization)
+
+            imported_count = 0
+            for item in manifest.files:
+                self.source_files.append(item)
+                imported_count += 1
+
+            self.refresh_table()
+            self.lbl_status.setText(
+                f"Imported {imported_count} Source File(s) from '{Path(portfolio_path).name}'."
+            )
+            return imported_count
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Error Opening Portfolio",
+                f"Could not inspect PDF Portfolio '{Path(portfolio_path).name}':\n{e}"
+            )
+            return 0
+
+    def action_extract_all(self):
+        if not self.source_files:
+            QMessageBox.information(self, "No Source Files", "There are no Source Files in the workspace to extract.")
+            return
+        dest_dir = QFileDialog.getExistingDirectory(self, "Select Destination Folder to Extract Source Files")
+        if dest_dir:
+            count = self.extract_current_files_to_directory(dest_dir)
+            QMessageBox.information(
+                self,
+                "Extraction Complete",
+                f"Successfully extracted {count} Source File(s) to:\n{dest_dir}"
+            )
+
+    def extract_current_files_to_directory(self, output_dir: str) -> int:
+        """Extracts all currently loaded Source Files to `output_dir`, preserving nested folder paths."""
+        root = Path(output_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        count = 0
+        for item in self.source_files:
+            rel_folder = normalize_folder_path(item.folder)
+            target_dir = (root / rel_folder) if rel_folder else root
+            target_dir.mkdir(parents=True, exist_ok=True)
+            out_file = target_dir / Path(item.filename).name
+            out_file.write_bytes(item.read_bytes())
+            try:
+                ts = item.modified_date.timestamp()
+                os.utime(out_file, (ts, ts))
+            except OSError:
+                pass
+            count += 1
+        self.lbl_status.setText(f"Extracted {count} Source File(s) to {output_dir}.")
+        return count
 
     def refresh_table(self):
         self.table.blockSignals(True)
@@ -266,6 +418,15 @@ class MainWindow(QMainWindow):
         for row, item in enumerate(self.source_files):
             # 0: File Name
             name_item = QTableWidgetItem(item.filename)
+            tooltip_parts = []
+            if item.folder:
+                tooltip_parts.append(f"Folder: {item.folder}")
+            if item.bates_number:
+                tooltip_parts.append(f"Bates: {item.bates_number}")
+            if item.sha256:
+                tooltip_parts.append(f"SHA-256: {item.sha256}")
+            if tooltip_parts:
+                name_item.setToolTip(" | ".join(tooltip_parts))
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, 0, name_item)
 
@@ -391,6 +552,9 @@ class MainWindow(QMainWindow):
             subtitle=self.input_subtitle.text().strip() or "Standardized Collection",
             organization=self.input_org.text().strip() or "Organization",
             is_evaluation=is_eval,
+            bates_prefix=self.input_bates_prefix.text().strip(),
+            bates_start=int(self.spin_bates_start.value()),
+            include_sha256_manifest=bool(self.chk_sha256_manifest.isChecked()),
         )
         self.worker.progress.connect(self.on_worker_progress)
         self.worker.finished.connect(self.on_worker_finished)
@@ -404,7 +568,7 @@ class MainWindow(QMainWindow):
         self.btn_export.setEnabled(True)
         self.progress_bar.setVisible(False)
         if success:
-            QMessageBox.showinfo(self, "Portfolio Created", message)
+            QMessageBox.information(self, "Portfolio Created", message)
             self.lbl_status.setText(f"Portfolio created successfully with {len(self.source_files)} files.")
         else:
             QMessageBox.critical(self, "Error Creating Portfolio", f"An error occurred:\n{message}")
