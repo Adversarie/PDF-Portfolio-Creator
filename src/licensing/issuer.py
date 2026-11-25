@@ -7,15 +7,18 @@ Runs on the developer workstation or in the Lemon Squeezy serverless webhook.
 
 import sys
 import json
+import logging
 import argparse
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Tuple, Dict, Any, Optional
+from typing import Tuple, Dict, Any, Optional, List
 
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 
-from src.licensing.verifier import b64url_encode, canonicalize_json
+from src.licensing.verifier import b64url_encode, canonicalize_json, normalize_machine_id
+
+logger = logging.getLogger(__name__)
 
 
 def find_production_private_key() -> Optional[str]:
@@ -33,8 +36,8 @@ def find_production_private_key() -> Optional[str]:
                         val = line.split("=", 1)[1].strip()
                         if val:
                             return val
-            except Exception:
-                pass
+            except OSError as exc:
+                logger.debug("Could not read private key candidate %s: %s", cand, exc)
     return None
 
 
@@ -74,11 +77,13 @@ class LicenseIssuer:
         expires_at: Optional[str] = None,
         product: str = "pdf-portfolio-maker",
         updates_until: Optional[str] = None,
+        allowed_machines: Optional[List[str]] = None,
     ) -> str:
         """
         Creates a signed Ed25519 license token string.
         PPM1.<b64url_payload>.<b64url_sig> for 'pdf-portfolio-maker'
         PP1.<b64url_payload>.<b64url_sig> for 'picture-perfect'
+        TOC1.<b64url_payload>.<b64url_sig> for 'twitch-ocr-chatbot'
         """
         now = datetime.now(timezone.utc)
         if updates_until is None:
@@ -87,7 +92,12 @@ class LicenseIssuer:
         else:
             updates_until_str = updates_until if "T" in updates_until else f"{updates_until}T23:59:59Z"
 
-        prefix = "PP1" if product == "picture-perfect" else "PPM1"
+        prefix_map = {
+            "picture-perfect": "PP1",
+            "twitch-ocr-chatbot": "TOC1",
+            "pdf-portfolio-maker": "PPM1",
+        }
+        prefix = prefix_map.get(product, "PPM1")
 
         payload: Dict[str, Any] = {
             "product": product,
@@ -102,6 +112,13 @@ class LicenseIssuer:
             "expires_at": expires_at,
         }
 
+        if allowed_machines:
+            normalized_machines = [
+                normalize_machine_id(m) for m in allowed_machines if normalize_machine_id(m)
+            ]
+            if normalized_machines:
+                payload["allowed_machines"] = normalized_machines
+
         canonical_data = canonicalize_json(payload)
         signature = self._private_key.sign(canonical_data)  # Exactly 64 bytes
 
@@ -113,8 +130,12 @@ class LicenseIssuer:
     @classmethod
     def format_email_block(cls, token: str, product: str = "pdf-portfolio-maker") -> str:
         """Wraps a license token in recognizable human delimiters for delivery."""
-        is_pp = product == "picture-perfect" or token.startswith("PP1.")
-        tag = "PICTURE PERFECT" if is_pp else "PDF PORTFOLIO"
+        if product == "picture-perfect" or token.startswith("PP1."):
+            tag = "PICTURE PERFECT"
+        elif product == "twitch-ocr-chatbot" or token.startswith("TOC1."):
+            tag = "TWITCH OCR CHATBOT"
+        else:
+            tag = "PDF PORTFOLIO"
         return (
             f"-----BEGIN {tag} LICENSE KEY-----\n"
             f"{token}\n"
@@ -131,7 +152,12 @@ def main():
 
     # mint-key command
     mint_parser = subparsers.add_parser("mint-key", help="Mint a signed license token")
-    mint_parser.add_argument("--product", choices=["pdf-portfolio-maker", "picture-perfect"], default="pdf-portfolio-maker", help="Target product")
+    mint_parser.add_argument(
+        "--product",
+        choices=["pdf-portfolio-maker", "picture-perfect", "twitch-ocr-chatbot"],
+        default="pdf-portfolio-maker",
+        help="Target product",
+    )
     mint_parser.add_argument("--name", default="Licensed User", help="Customer name")
     mint_parser.add_argument("--email", default="owner@pictureperfect.click", help="Customer email")
     mint_parser.add_argument("--order-id", default=None, help="Order or license ID")
@@ -140,11 +166,16 @@ def main():
     mint_parser.add_argument("--updates-until", default=None, help="Updates cutoff date (YYYY-MM-DD or ISO 8601)")
     mint_parser.add_argument("--expires-at", default=None, help="Optional expiration date")
     mint_parser.add_argument("--max-version", type=int, default=1, help="Max major version")
+    mint_parser.add_argument("--machine-id", action="append", default=None, help="Optional hardware Machine ID(s) to bind license to")
     mint_parser.add_argument("--private-key-hex", default=None, help="Ed25519 private key hex (defaults to .secrets file)")
     mint_parser.add_argument("--raw", action="store_true", help="Output raw token only (no delimiters)")
 
     # Also support top-level arguments if user directly invokes without subcommand:
-    parser.add_argument("--product", choices=["pdf-portfolio-maker", "picture-perfect"], default="pdf-portfolio-maker")
+    parser.add_argument(
+        "--product",
+        choices=["pdf-portfolio-maker", "picture-perfect", "twitch-ocr-chatbot"],
+        default="pdf-portfolio-maker",
+    )
     parser.add_argument("--name", default="Licensed User")
     parser.add_argument("--email", default="owner@pictureperfect.click")
     parser.add_argument("--order-id", default=None)
@@ -153,6 +184,7 @@ def main():
     parser.add_argument("--updates-until", default=None)
     parser.add_argument("--expires-at", default=None)
     parser.add_argument("--max-version", type=int, default=1)
+    parser.add_argument("--machine-id", action="append", default=None)
     parser.add_argument("--private-key-hex", default=None)
     parser.add_argument("--raw", action="store_true")
 
@@ -175,6 +207,13 @@ def main():
 
     order_id = args.order_id or f"manual_{int(datetime.now(timezone.utc).timestamp())}"
 
+    allowed_machines: List[str] = []
+    if args.machine_id:
+        for item in args.machine_id:
+            for part in str(item).split(","):
+                if part.strip():
+                    allowed_machines.append(part.strip())
+
     issuer = LicenseIssuer(priv_hex)
     token = issuer.create_license_token(
         customer_name=args.name,
@@ -186,6 +225,7 @@ def main():
         expires_at=args.expires_at,
         product=args.product,
         updates_until=args.updates_until,
+        allowed_machines=allowed_machines or None,
     )
 
     if args.raw:
